@@ -1,7 +1,9 @@
 #!/bin/bash
 # auto_prepare.sh
 # Dijalankan di dalam LXC Debian 13 (fresh install)
-# Mengubah PermitRootLogin menjadi yes & mengaktifkan Fail2ban (anti-bruteforce)
+# - Install Git
+# - Ubah PermitRootLogin menjadi yes
+# - Aktifkan Fail2ban (anti-bruteforce)
 
 set -euo pipefail
 
@@ -11,12 +13,20 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-echo "=== [1/5] Memperbarui daftar paket ==="
-apt-get update -y
+echo "=== [1/6] Memperbarui daftar paket ==="
+apt-get update
 
-echo "=== [2/5] Mengubah konfigurasi SSH: PermitRootLogin yes ==="
+echo "=== [2/6] Menginstal paket yang dibutuhkan (git, fail2ban) ==="
+apt-get install -y git fail2ban
+
+echo "=== [3/6] Mengubah konfigurasi SSH: PermitRootLogin yes ==="
 SSHD_CONFIG="/etc/ssh/sshd_config"
 BACKUP_SSH="/etc/ssh/sshd_config.bak.$(date +%Y%m%d%H%M%S)"
+
+if [[ ! -f "$SSHD_CONFIG" ]]; then
+    echo "ERROR: $SSHD_CONFIG tidak ditemukan. Pastikan paket openssh-server terinstal."
+    exit 1
+fi
 
 # Backup file asli
 cp -a "$SSHD_CONFIG" "$BACKUP_SSH"
@@ -24,28 +34,22 @@ echo "Backup sshd_config dibuat: $BACKUP_SSH"
 
 # Ubah atau tambahkan PermitRootLogin yes
 if grep -qE '^\s*#?\s*PermitRootLogin' "$SSHD_CONFIG"; then
-    # Ganti baris yang ada (termasuk yang ter-comment)
     sed -i -E 's/^\s*#?\s*PermitRootLogin.*/PermitRootLogin yes/' "$SSHD_CONFIG"
 else
-    # Jika tidak ada baris sama sekali, tambahkan di akhir
     echo "PermitRootLogin yes" >> "$SSHD_CONFIG"
 fi
 
-# Validasi konfigurasi SSH sebelum restart
+echo "=== [4/6] Validasi konfigurasi SSH & restart service ==="
 if ! sshd -t; then
     echo "Konfigurasi SSH tidak valid. Mengembalikan backup..."
     cp -a "$BACKUP_SSH" "$SSHD_CONFIG"
     exit 1
 fi
 
-# Restart SSH
 systemctl restart ssh
 echo "SSH di-restart. PermitRootLogin sekarang: $(sshd -T | grep -i permitrootlogin || true)"
 
-echo "=== [3/5] Menginstal Fail2ban ==="
-apt-get install -y fail2ban
-
-echo "=== [4/5] Membuat konfigurasi jail.local untuk SSH ==="
+echo "=== [5/6] Membuat konfigurasi jail.local untuk Fail2ban ==="
 JAIL_LOCAL="/etc/fail2ban/jail.local"
 if [[ ! -f "$JAIL_LOCAL" ]]; then
     cat > "$JAIL_LOCAL" <<'EOF'
@@ -69,7 +73,7 @@ else
     echo "File jail.local sudah ada, tidak ditimpa."
 fi
 
-echo "=== [5/5] Mengaktifkan & menjalankan Fail2ban ==="
+echo "=== [6/6] Mengaktifkan & menjalankan Fail2ban ==="
 systemctl enable fail2ban
 systemctl restart fail2ban
 
@@ -78,7 +82,9 @@ fail2ban-client status sshd || true
 
 echo ""
 echo "=== Selesai ==="
-echo "SSH: PermitRootLogin sudah diubah menjadi 'yes'."
-echo "Fail2ban: aktif dengan jail sshd (maxretry=3, bantime=24h)."
-echo "PENTING: Pastikan Anda sudah memiliki akses lain (misal console LXC) sebelum logout,"
+echo "Git          : $(git --version 2>/dev/null || echo 'TIDAK terinstal')"
+echo "SSH          : PermitRootLogin = yes"
+echo "Fail2ban     : aktif (jail sshd, maxretry=3, bantime=24h)"
+echo ""
+echo "PENTING: Pastikan Anda punya akses lain (misal console LXC) sebelum logout,"
 echo "karena mengaktifkan root login via password meningkatkan risiko keamanan."
